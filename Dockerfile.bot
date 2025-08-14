@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+WORKDIR /app/BOT
+COPY BOT/ /app/BOT/
+RUN if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+ENV PORT=8000
+# Adjust CMD to your bot's entrypoint if different
+CMD ["python","-m","app"]
