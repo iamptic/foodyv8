@@ -5,9 +5,7 @@
   <title>Foody — Новый оффер</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- Flatpickr (дата+время) -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
-  <!-- FilePond (загрузка фото с превью) -->
   <link href="https://unpkg.com/filepond@^4/dist/filepond.min.css" rel="stylesheet" />
   <link href="https://unpkg.com/filepond-plugin-image-preview@^4/dist/filepond-plugin-image-preview.min.css" rel="stylesheet" />
 
@@ -70,7 +68,6 @@
 
       <div style="margin-top:16px;">
         <label>Фото (опционально)</label>
-        <!-- FilePond target -->
         <input type="file" id="photo" accept="image/*" />
         <input type="hidden" name="image_url" id="image_url" />
         <div class="hint">Drag&drop, превью, ограничение размера, мгновенная загрузка.</div>
@@ -90,8 +87,14 @@
   <script src="https://unpkg.com/filepond-plugin-file-validate-size@^2/dist/filepond-plugin-file-validate-size.min.js"></script>
   <script src="https://unpkg.com/filepond@^4/dist/filepond.min.js"></script>
 
-  <!-- window.foodyApi из /config.js -->
+  <!-- /config.js задаёт window.foodyApi -->
   <script src="/config.js"></script>
+  <script>
+    // Жёсткий запасной адрес на случай, если config.js не подгрузился
+    if (!window.foodyApi) {
+      window.foodyApi = 'https://foodyback-production.up.railway.app';
+    }
+  </script>
 
   <script>
     // === Flatpickr ===
@@ -101,7 +104,7 @@
       time_24hr: true,
       minuteIncrement: 5,
       dateFormat: "Y-m-d H:i",
-      defaultDate: new Date(Date.now() + 60*60*1000) // +1 час
+      defaultDate: new Date(Date.now() + 60*60*1000)
     });
 
     // === FilePond ===
@@ -112,7 +115,7 @@
     );
 
     const pond = FilePond.create(document.getElementById('photo'), {
-      name: 'file',                      // ВАЖНО: поле формы называется "file"
+      name: 'file',
       allowMultiple: false,
       acceptedFileTypes: ['image/*'],
       maxFileSize: '5MB',
@@ -130,7 +133,7 @@
                 return data.url;
               }
               throw new Error('Bad response');
-            } catch(e) {
+            } catch (e) {
               console.error('Bad upload response', res);
               alert('Ошибка загрузки изображения');
             }
@@ -144,7 +147,7 @@
       }
     });
 
-    // === Submit оффера (фото можно не загружать) ===
+    // === Submit (фото можно не загружать) ===
     document.getElementById('offerForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const payload = Object.fromEntries(new FormData(e.target).entries());
