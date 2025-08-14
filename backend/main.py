@@ -2,9 +2,10 @@ import os
 import mimetypes
 from uuid import uuid4
 from typing import Dict, Any
+from datetime import datetime, timezone
 
 import asyncpg
-from fastapi import FastAPI, UploadFile, File, HTTPException, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import boto3
@@ -15,7 +16,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "")
 RUN_MIGRATIONS = os.environ.get("RUN_MIGRATIONS", "0") == "1"
 
-R2_ENDPOINT = os.environ.get("R2_ENDPOINT")  # e.g. https://c1892812....r2.cloudflarestorage.com
+R2_ENDPOINT = os.environ.get("R2_ENDPOINT")  # e.g. https://c189...r2.cloudflarestorage.com
 R2_BUCKET = os.environ.get("R2_BUCKET")
 R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
@@ -23,7 +24,6 @@ R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 # Плейсхолдер, если фото не загрузили
 NO_PHOTO_URL = "https://foodyweb-production.up.railway.app/img/no-photo.png"
 
-# --- APP ---
 app = FastAPI()
 _pool: asyncpg.pool.Pool | None = None
 
@@ -37,7 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- DB ---
+# --- DB bootstrap ---
 async def _initialize(conn: asyncpg.Connection):
     await conn.execute(
         """
@@ -100,10 +100,8 @@ def _r2_client():
 
 def _public_r2_url(key: str) -> str:
     """
-    Преобразуем account endpoint вида:
-      https://<account>.r2.cloudflarestorage.com
-    в публичный:
-      https://pub-<account>.r2.dev/<bucket>/<key>
+    Account endpoint: https://<account>.r2.cloudflarestorage.com
+    Public URL:       https://pub-<account>.r2.dev/<bucket>/<key>
     """
     host = R2_ENDPOINT.split("//", 1)[-1]
     account = host.split(".", 1)[0]
@@ -111,13 +109,13 @@ def _public_r2_url(key: str) -> str:
 
 # --- Upload image to R2 ---
 @app.post("/upload")
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...), request: Request = None):
     try:
         ext = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
         if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
             raise HTTPException(status_code=400, detail="Unsupported image type")
 
-        content = await file.read()  # читаем в память (надёжно для WSGI/ASGI)
+        content = await file.read()  # читаем в память (надёжно под ASGI)
         key = f"offers/{uuid4().hex}{ext}"
 
         s3 = _r2_client()
@@ -128,7 +126,7 @@ async def upload(file: UploadFile = File(...)):
             Key=key,
             Body=content,
             ContentType=content_type,
-            ACL="public-read"
+            ACL="public-read",
         )
 
         public_url = _public_r2_url(key)
@@ -136,38 +134,67 @@ async def upload(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        # минимальный лог для отладки
+        print("UPLOAD_ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
 # --- Create offer (image optional) ---
+def _parse_expires_at(value: str) -> datetime:
+    """
+    Ожидаем формат из flatpickr: 'YYYY-MM-DD HH:MM'
+    Делаем timezone-aware (UTC), чтобы TIMESTAMPTZ принял корректно.
+    """
+    if not value:
+        raise ValueError("expires_at is empty")
+    value = value.strip()
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d %H:%M")
+    except ValueError:
+        # запасной вариант: ISO
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    # делаем aware UTC
+    return dt.replace(tzinfo=timezone.utc)
+
 @app.post("/merchant/offers")
 async def create_offer(payload: Dict[str, Any] = Body(...)):
-    required = ["title", "price", "stock", "expires_at"]
-    for r in required:
-        if r not in payload or (str(payload[r]).strip() == ""):
-            raise HTTPException(status_code=400, detail=f"Field {r} is required")
+    try:
+        required = ["title", "price", "stock", "expires_at"]
+        for r in required:
+            if r not in payload or (str(payload[r]).strip() == ""):
+                raise HTTPException(status_code=400, detail=f"Field {r} is required")
 
-    merchant_id = int(payload.get("merchant_id") or 1)
-    image_url = (payload.get("image_url") or "").strip() or NO_PHOTO_URL
+        merchant_id = int(payload.get("merchant_id") or 1)
+        image_url = (payload.get("image_url") or "").strip() or NO_PHOTO_URL
+        # ВАЖНО: конвертируем строку из формы в datetime
+        expires_at_dt = _parse_expires_at(payload.get("expires_at"))
 
-    async with _pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO offers (merchant_id, title, description, price, stock, category, image_url, expires_at, status, created_at)
-            VALUES ($1, $2, $3, $4, $5, COALESCE($6,'other'), $7, $8::timestamptz, 'active', NOW())
-            RETURNING id
-            """,
-            merchant_id,
-            payload.get("title"),
-            payload.get("description"),
-            payload.get("price"),
-            int(payload.get("stock")),
-            payload.get("category"),
-            image_url,
-            payload.get("expires_at"),
-        )
-        return {"id": row["id"]}
+        async with _pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO offers (merchant_id, title, description, price, stock, category, image_url, expires_at, status, created_at)
+                VALUES ($1, $2, $3, $4, $5, COALESCE($6,'other'), $7, $8, 'active', NOW())
+                RETURNING id
+                """,
+                merchant_id,
+                payload.get("title"),
+                payload.get("description"),
+                payload.get("price"),
+                int(payload.get("stock")),
+                payload.get("category"),
+                image_url,
+                expires_at_dt,  # передаем datetime-объект
+            )
+            return {"id": row["id"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("CREATE_OFFER_ERROR:", repr(e))
+        raise HTTPException(status_code=500, detail=f"Create offer failed: {e}")
 
-# --- Public offers list (фикс тройных кавычек) ---
+# --- Public offers list ---
 @app.get("/public/offers")
 async def public_offers():
     async with _pool.acquire() as conn:
