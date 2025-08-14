@@ -1,0 +1,19 @@
+{
+  "name": "foody-web",
+  "version": "1.0.0",
+  "description": "Foody web frontend - buyer and merchant",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

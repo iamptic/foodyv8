@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Foody · Витрина</title>
+  <link rel="stylesheet" href="./style.css" />
+  <script defer src="/config.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <div class="tg-shell">
+    <header class="tg-appbar">
+      <div class="tg-appbar__left">
+        <div class="avatar">F</div>
+        <div class="meta">
+          <div class="title">Foody · Витрина</div>
+          <div class="subtitle">Скидки перед закрытием</div>
+        </div>
+      </div>
+    </header>
+
+    <main class="tg-content">
+      <div class="toolbar">
+        <input id="q" class="search" placeholder="Поиск" />
+        <button id="refresh" class="btn">Обновить</button>
+      </div>
+      <div id="grid" class="grid"></div>
+    </main>
+  </div>
+
+  <div id="sheet" class="sheet hidden">
+    <div class="sheet__dialog">
+      <div class="sheet__h">
+        <div class="sheet__t" id="sTitle">—</div>
+        <button class="sheet__x" id="sheetClose">×</button>
+      </div>
+      <div class="sheet__b">
+        <img id="sImg" alt="" />
+        <div class="meta">
+          <div id="sPrice" class="price">—</div>
+          <div id="sOld" class="old">—</div>
+          <div id="sQty" class="qty">—</div>
+          <div id="sExp" class="exp">—</div>
+        </div>
+        <div id="sDesc" class="desc">—</div>
+        <div class="actions"><button id="reserveBtn" class="btn primary">Забронировать</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+</body>
+</html>

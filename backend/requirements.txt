@@ -1,0 +1,7 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+asyncpg>=0.29
+python-multipart>=0.0.9
+boto3>=1.34
+starlette>=0.37
+pydantic>=2.7

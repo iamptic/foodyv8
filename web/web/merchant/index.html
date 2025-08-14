@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Foody · ЛК ресторана</title>
+  <link rel="stylesheet" href="./style.css" />
+  <script defer src="/config.js"></script>
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="tg-header">
+      <div class="tg-header__left">
+        <div class="avatar">🍽️</div>
+        <div class="titles">
+          <div class="title">Foody</div>
+          <div class="subtitle">Личный кабинет ресторана</div>
+        </div>
+      </div>
+      <div class="tg-header__right">
+        <button id="logoutBtn" class="btn btn-ghost">Выйти</button>
+      </div>
+    </header>
+
+    <nav class="segmented" id="tabs">
+      <button class="seg-btn active" data-tab="dashboard">Дашборд</button>
+      <button class="seg-btn" data-tab="offers">Офферы</button>
+      <button class="seg-btn" data-tab="create">Создать</button>
+      <button class="seg-btn" data-tab="profile">Профиль</button>
+      <button class="seg-btn" data-tab="export">Экспорт</button>
+    </nav>
+
+    <main class="content">
+      <!-- AUTH -->
+      <section class="pane" id="auth">
+        <div class="card card-glass">
+          <div class="card-title">Быстрый старт</div>
+          <div class="grid two">
+            <div class="card">
+              <div class="card-subtitle">1) Создать ресторан</div>
+              <form id="registerForm" class="form">
+                <label>Название
+                  <input name="name" placeholder="Кафе Плюс" required>
+                </label>
+                <label>Телефон
+                  <input name="phone" placeholder="+7 900 123-45-67" required>
+                </label>
+                <button class="btn btn-primary">Создать</button>
+              </form>
+            </div>
+            <div class="card">
+              <div class="card-subtitle">2) Войти по данным</div>
+              <form id="loginForm" class="form">
+                <label>Restaurant ID
+                  <input name="restaurant_id" placeholder="RID_..." required>
+                </label>
+                <label>API Key
+                  <input name="api_key" placeholder="KEY_..." required>
+                </label>
+                <button class="btn btn-primary">Войти</button>
+              </form>
+            </div>
+          </div>
+          <div class="hint">После регистрации вы получите <b>Restaurant ID</b> и <b>API Key</b>. Данные сохраняются в браузере.</div>
+        </div>
+      </section>
+
+      <!-- DASHBOARD -->
+      <section class="pane active" id="dashboard">
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-val" id="statOffers">—</div>
+            <div class="stat-label">Активные офферы</div>
+          </div>
+          <div class="stat">
+            <div class="stat-val" id="statQty">—</div>
+            <div class="stat-label">Остаток шт.</div>
+          </div>
+          <div class="stat">
+            <div class="stat-val" id="statDisc">—</div>
+            <div class="stat-label">Средняя скидка</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Ближайшие офферы</div>
+          <div id="dashboardOffers" class="list list-cards">
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- OFFERS LIST -->
+      <section class="pane" id="offers">
+        <div class="card">
+          <div class="card-title">Мои офферы</div>
+          <div id="offerList" class="table">
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CREATE OFFER -->
+      <section class="pane" id="create">
+        <div class="card">
+          <div class="card-title">Создать оффер</div>
+          <form id="offerForm" class="form grid two">
+            <label>Название
+              <input name="title" placeholder="Сет эклеров" required>
+            </label>
+            <label>Цена, ₽
+              <input name="price" type="number" min="0" step="1" placeholder="199" required>
+            </label>
+            <label>Старая цена, ₽
+              <input name="original_price" type="number" min="0" step="1" placeholder="349">
+            </label>
+            <label>Количество, шт
+              <input name="qty_total" type="number" min="1" step="1" placeholder="5" required>
+            </label>
+            <label class="full">Истекает
+              <input name="expires_at" type="datetime-local" required>
+            </label>
+            <label class="full">Фото (URL)
+              <input name="image_url" placeholder="https://...">
+            </label>
+            <label class="full">
+              <textarea name="description" rows="3" placeholder="Краткое описание набора…"></textarea>
+            </label>
+            <button class="btn btn-primary full">Сохранить</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- PROFILE -->
+      <section class="pane" id="profile">
+        <div class="card">
+          <div class="card-title">Профиль ресторана</div>
+          <form id="profileForm" class="form grid two">
+            <label>Название
+              <input name="name">
+            </label>
+            <label>Телефон
+              <input name="phone">
+            </label>
+            <label class="full">Адрес
+              <input name="address" placeholder="Город, улица, дом">
+            </label>
+            <label>Широта
+              <input name="lat" type="number" step="0.000001">
+            </label>
+            <label>Долгота
+              <input name="lng" type="number" step="0.000001">
+            </label>
+            <label>Время закрытия
+              <input name="close_time" type="time">
+            </label>
+            <button class="btn btn-primary full">Сохранить</button>
+          </form>
+        </div>
+        <div class="card">
+          <div class="card-title">Текущие данные</div>
+          <pre id="profileDump" class="dump">—</pre>
+        </div>
+      </section>
+
+      <!-- EXPORT -->
+      <section class="pane" id="export">
+        <div class="card">
+          <div class="card-title">Экспорт CSV</div>
+          <p class="muted">Скачайте выгрузку текущих офферов.</p>
+          <button id="downloadCsv" class="btn btn-primary">Скачать CSV</button>
+        </div>
+        <div class="card">
+          <div class="card-title">Текущие ключи</div>
+          <pre id="creds" class="dump small">—</pre>
+        </div>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <button class="nav-btn active" data-tab="dashboard" title="Дашборд">🏠</button>
+      <button class="nav-btn" data-tab="offers" title="Офферы">🛍️</button>
+      <button class="nav-btn fab" data-tab="create" title="Создать">＋</button>
+      <button class="nav-btn" data-tab="profile" title="Профиль">👤</button>
+      <button class="nav-btn" data-tab="export" title="Экспорт">⬇️</button>
+    </nav>
+
+    <div id="toast"></div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Foody — Новый оффер</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+  <link href="https://unpkg.com/filepond@^4/dist/filepond.min.css" rel="stylesheet" />
+  <link href="https://unpkg.com/filepond-plugin-image-preview@^4/dist/filepond-plugin-image-preview.min.css" rel="stylesheet" />
+
+  <style>
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; padding: 24px; max-width: 920px; margin: 0 auto; }
+    .card { border: 1px solid #eee; border-radius: 16px; padding: 20px; box-shadow: 0 4px 14px rgba(0,0,0,.05); }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    label { font-weight: 600; font-size: 14px; margin-bottom: 6px; display: block; }
+    input, textarea, select { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 12px; font-size: 14px; }
+    button { padding: 12px 16px; border-radius: 12px; border: 0; background: #111; color: #fff; font-weight: 600; cursor: pointer; }
+    .hint { color:#666; font-size:12px; }
+    .muted { color:#555; }
+  </style>
+</head>
+<body>
+  <h1>Создать оффер</h1>
+  <p class="muted">Фото — опционально. Выберите дату/время, цену и остаток.</p>
+
+  <div class="card">
+    <form id="offerForm">
+      <div class="row">
+        <div>
+          <label>Название</label>
+          <input name="title" placeholder="Напр., Набор суши «Закат»" required />
+        </div>
+        <div>
+          <label>Цена (₽ / AED)</label>
+          <input name="price" type="number" min="0" step="0.01" placeholder="Напр., 250" required />
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <label>Описание</label>
+        <textarea name="description" rows="3" placeholder="Кратко: состав, для скольких порций и т.п."></textarea>
+      </div>
+
+      <div class="row-3" style="margin-top:16px;">
+        <div>
+          <label>Остаток</label>
+          <input name="stock" type="number" min="1" step="1" value="1" required />
+        </div>
+        <div>
+          <label>Истекает (дата и время)</label>
+          <input id="expires_at" name="expires_at" placeholder="Выберите дату и время" required />
+          <div class="hint">Таймер скидок привязан к этой точке.</div>
+        </div>
+        <div>
+          <label>Категория</label>
+          <select name="category">
+            <option value="ready_meal">Готовые блюда</option>
+            <option value="bakery">Выпечка</option>
+            <option value="sushi">Суши/роллы</option>
+            <option value="salad">Салаты</option>
+            <option value="dessert">Десерты</option>
+            <option value="other">Другое</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-top:16px;">
+        <label>Фото (опционально)</label>
+        <input type="file" id="photo" accept="image/*" />
+        <input type="hidden" name="image_url" id="image_url" />
+        <div class="hint">Drag&drop, превью, ограничение размера, мгновенная загрузка.</div>
+      </div>
+
+      <div style="margin-top:20px;">
+        <button type="submit">Создать оффер</button>
+      </div>
+    </form>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/ru.js"></script>
+
+  <script src="https://unpkg.com/filepond-plugin-image-preview@^4/dist/filepond-plugin-image-preview.min.js"></script>
+  <script src="https://unpkg.com/filepond-plugin-file-validate-type@^1/dist/filepond-plugin-file-validate-type.min.js"></script>
+  <script src="https://unpkg.com/filepond-plugin-file-validate-size@^2/dist/filepond-plugin-file-validate-size.min.js"></script>
+  <script src="https://unpkg.com/filepond@^4/dist/filepond.min.js"></script>
+
+  <!-- /config.js задаёт window.foodyApi -->
+  <script src="/config.js"></script>
+  <script>
+    // Жёсткий запасной адрес на случай, если config.js не подгрузился
+    if (!window.foodyApi) {
+      window.foodyApi = 'https://foodyback-production.up.railway.app';
+    }
+  </script>
+
+  <script>
+    // === Flatpickr ===
+    flatpickr.localize(flatpickr.l10ns.ru);
+    flatpickr("#expires_at", {
+      enableTime: true,
+      time_24hr: true,
+      minuteIncrement: 5,
+      dateFormat: "Y-m-d H:i",
+      defaultDate: new Date(Date.now() + 60*60*1000)
+    });
+
+    // === FilePond ===
+    FilePond.registerPlugin(
+      FilePondPluginImagePreview,
+      FilePondPluginFileValidateType,
+      FilePondPluginFileValidateSize
+    );
+
+    const pond = FilePond.create(document.getElementById('photo'), {
+      name: 'file',
+      allowMultiple: false,
+      acceptedFileTypes: ['image/*'],
+      maxFileSize: '5MB',
+      labelIdle: 'Перетащите фото или <span class="filepond--label-action">выберите</span>',
+      server: {
+        process: {
+          url: (window.foodyApi || '') + '/upload',
+          method: 'POST',
+          withCredentials: false,
+          onload: (res) => {
+            try {
+              const data = JSON.parse(res);
+              if (data && data.url) {
+                document.getElementById('image_url').value = data.url;
+                return data.url;
+              }
+              throw new Error('Bad response');
+            } catch (e) {
+              console.error('Bad upload response', res);
+              alert('Ошибка загрузки изображения');
+            }
+          },
+          onerror: (res) => {
+            console.error(res);
+            alert('Ошибка загрузки изображения');
+          }
+        },
+        revert: null
+      }
+    });
+
+    // === Submit (фото можно не загружать) ===
+    document.getElementById('offerForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = Object.fromEntries(new FormData(e.target).entries());
+      try {
+        const res = await fetch((window.foodyApi || '') + '/merchant/offers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          throw new Error(txt || ('HTTP ' + res.status));
+        }
+        await res.json();
+        alert('Оффер создан');
+        location.href = '/web/merchant/offers';
+      } catch (err) {
+        console.error(err);
+        alert('Не удалось создать оффер: ' + err.message);
+      }
+    });
+  </script>
+</body>
+</html>
