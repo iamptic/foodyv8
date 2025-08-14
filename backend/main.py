@@ -12,6 +12,8 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
+from passlib.hash import bcrypt
+
 # ====== ENV ======
 DATABASE_URL = os.environ.get("DATABASE_URL")
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "")
@@ -22,7 +24,6 @@ R2_BUCKET = os.environ.get("R2_BUCKET")
 R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 
-# Плейсхолдер, если фото не загрузили
 NO_PHOTO_URL = "https://foodyweb-production.up.railway.app/img/no-photo.png"
 
 # ====== APP / CORS ======
@@ -40,14 +41,28 @@ app.add_middleware(
 
 # ====== DB bootstrap ======
 async def _initialize(conn: asyncpg.Connection):
+    # базовые таблицы
     await conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          email TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS merchants (
           id SERIAL PRIMARY KEY,
           name TEXT NOT NULL,
           address TEXT,
           phone TEXT,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS merchant_users (
+          merchant_id INT NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+          user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          PRIMARY KEY (merchant_id, user_id)
         );
 
         CREATE TABLE IF NOT EXISTS offers (
@@ -65,15 +80,7 @@ async def _initialize(conn: asyncpg.Connection):
         );
 
         CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at);
-        CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status);
-        """
-    )
-    # Гарантируем базового мерчанта с id=1 (для пилота)
-    await conn.execute(
-        """
-        INSERT INTO merchants (id, name, address, phone)
-        VALUES (1, 'Demo Restaurant', 'Demo address', '+000000000')
-        ON CONFLICT (id) DO NOTHING;
+        CREATE INDEX IF NOT EXISTS idx_offers_status  ON offers(status);
         """
     )
 
@@ -94,7 +101,7 @@ async def pool():
 async def health():
     return {"ok": True}
 
-# ====== R2 client / URL helpers ======
+# ====== Helpers ======
 def _r2_client():
     if not all([R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
         raise RuntimeError("R2 env not configured")
@@ -107,18 +114,86 @@ def _r2_client():
         region_name="auto",
     )
 
-def _public_r2_url(key: str) -> str:
-    """
-    Account endpoint: https://<account>.r2.cloudflarestorage.com
-    Public URL:       https://pub-<account>.r2.dev/<bucket>/<key>
-    Фоллбэк (если pub-домен не настроен): <endpoint>/<bucket>/<key>
-    """
+def _pub_url_or_none(key: str) -> str | None:
     try:
         host = R2_ENDPOINT.split("//", 1)[-1]
         account = host.split(".", 1)[0]
         return f"https://pub-{account}.r2.dev/{R2_BUCKET}/{key}"
     except Exception:
-        return f"{R2_ENDPOINT.rstrip('/')}/{R2_BUCKET}/{key}"
+        return None
+
+def _parse_expires_at(value: str) -> datetime:
+    if not value:
+        raise ValueError("expires_at is empty")
+    value = value.strip()
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d %H:%M")
+        return dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
+# ====== Auth/Registration ======
+@app.post("/merchant/register")
+async def merchant_register(payload: Dict[str, Any] = Body(...)):
+    """
+    JSON: { name, address?, phone?, email, password }
+    Создаёт user + merchant и линкует их. Возвращает их id.
+    """
+    required = ["name", "email", "password"]
+    for r in required:
+        if r not in payload or (str(payload[r]).strip() == ""):
+            raise HTTPException(status_code=400, detail=f"Field {r} is required")
+
+    email = payload["email"].strip().lower()
+    pwd = payload["password"].strip()
+    if len(pwd) < 6:
+        raise HTTPException(status_code=400, detail="Password too short")
+
+    pwd_hash = bcrypt.hash(pwd)
+
+    async with _pool.acquire() as conn:
+        tr = conn.transaction()
+        await tr.start()
+        try:
+            # 1) user
+            user_row = await conn.fetchrow(
+                "INSERT INTO users (email, password_hash) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING RETURNING id",
+                email, pwd_hash
+            )
+            if user_row is None:
+                # email уже занят — вытащим id
+                user_row = await conn.fetchrow("SELECT id FROM users WHERE email=$1", email)
+
+            user_id = int(user_row["id"])
+
+            # 2) merchant
+            merch_row = await conn.fetchrow(
+                """
+                INSERT INTO merchants (name, address, phone)
+                VALUES ($1, $2, $3)
+                RETURNING id
+                """,
+                payload.get("name"),
+                payload.get("address"),
+                payload.get("phone"),
+            )
+            merchant_id = int(merch_row["id"])
+
+            # 3) link
+            await conn.execute(
+                "INSERT INTO merchant_users (merchant_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                merchant_id, user_id
+            )
+
+            await tr.commit()
+            return {"merchant_id": merchant_id, "user_id": user_id}
+        except Exception as e:
+            await tr.rollback()
+            print("REGISTER_ERROR:", repr(e))
+            raise HTTPException(status_code=500, detail="Register failed")
 
 # ====== Upload image to R2 ======
 @app.post("/upload")
@@ -128,50 +203,29 @@ async def upload(file: UploadFile = File(...)):
         if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
             raise HTTPException(status_code=400, detail="Unsupported image type")
 
-        content = await file.read()  # читаем в память (ASGI-safe)
+        content = await file.read()
         key = f"offers/{uuid4().hex}{ext}"
 
         s3 = _r2_client()
-        content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
+        ctype = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
 
-        # У R2 ACL часто игнорируются — не передаем ACL вовсе.
-        s3.put_object(
-            Bucket=R2_BUCKET,
-            Key=key,
-            Body=content,
-            ContentType=content_type,
+        s3.put_object(Bucket=R2_BUCKET, Key=key, Body=content, ContentType=ctype)
+
+        public_url = _pub_url_or_none(key)
+        display_url = public_url or s3.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": R2_BUCKET, "Key": key},
+            ExpiresIn=60 * 60 * 24 * 365,  # 1 год
         )
-
-        public_url = _public_r2_url(key)
-        return {"url": public_url, "key": key}
+        return {"url": public_url, "display_url": display_url, "key": key}
     except (BotoCoreError, ClientError) as e:
         print("UPLOAD_ERROR_S3:", repr(e))
         raise HTTPException(status_code=500, detail=f"Upload failed (S3): {e}")
-    except HTTPException:
-        raise
     except Exception as e:
         print("UPLOAD_ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
-# ====== Create offer (image optional) ======
-def _parse_expires_at(value: str) -> datetime:
-    """
-    Ожидаем 'YYYY-MM-DD HH:MM' (flatpickr).
-    Делаем timezone-aware (UTC).
-    """
-    if not value:
-        raise ValueError("expires_at is empty")
-    value = value.strip()
-    try:
-        dt = datetime.strptime(value, "%Y-%m-%d %H:%M")
-        return dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        # запасной вариант: ISO / c «Z»
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-
+# ====== Offers (create + public list) ======
 @app.post("/merchant/offers")
 async def create_offer(payload: Dict[str, Any] = Body(...)):
     try:
@@ -180,19 +234,18 @@ async def create_offer(payload: Dict[str, Any] = Body(...)):
             if r not in payload or (str(payload[r]).strip() == ""):
                 raise HTTPException(status_code=400, detail=f"Field {r} is required")
 
+        # пока без полноценной сессии — пилот на merchant_id=1
         merchant_id = int(payload.get("merchant_id") or 1)
         image_url = (payload.get("image_url") or "").strip() or NO_PHOTO_URL
         expires_at_dt = _parse_expires_at(payload.get("expires_at"))
 
         async with _pool.acquire() as conn:
-            # На случай, если кто-то дропнул merchants — подчиним мерчанта 1 перед вставкой
-            await conn.execute(
-                """
+            # гарантия наличия мерчанта 1 для пилота
+            await conn.execute("""
                 INSERT INTO merchants (id, name)
                 VALUES (1, 'Demo Restaurant')
                 ON CONFLICT (id) DO NOTHING;
-                """
-            )
+            """)
 
             row = await conn.fetchrow(
                 """
@@ -218,7 +271,6 @@ async def create_offer(payload: Dict[str, Any] = Body(...)):
         print("CREATE_OFFER_ERROR:", repr(e))
         raise HTTPException(status_code=500, detail=f"Create offer failed: {e}")
 
-# ====== Public offers ======
 @app.get("/public/offers")
 async def public_offers():
     async with _pool.acquire() as conn:
