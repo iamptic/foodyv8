@@ -10,11 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import boto3
 from botocore.config import Config as BotoConfig
 
+# --- ENV ---
 DATABASE_URL = os.environ.get("DATABASE_URL")
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "")
 RUN_MIGRATIONS = os.environ.get("RUN_MIGRATIONS", "0") == "1"
 
-R2_ENDPOINT = os.environ.get("R2_ENDPOINT")
+R2_ENDPOINT = os.environ.get("R2_ENDPOINT")  # e.g. https://c1892812....r2.cloudflarestorage.com
 R2_BUCKET = os.environ.get("R2_BUCKET")
 R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
@@ -22,6 +23,7 @@ R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 # Плейсхолдер, если фото не загрузили
 NO_PHOTO_URL = "https://foodyweb-production.up.railway.app/img/no-photo.png"
 
+# --- APP ---
 app = FastAPI()
 _pool: asyncpg.pool.Pool | None = None
 
@@ -35,32 +37,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- DB bootstrap ---
+# --- DB ---
 async def _initialize(conn: asyncpg.Connection):
-    await conn.execute("""
-    CREATE TABLE IF NOT EXISTS merchants (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      address TEXT,
-      phone TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS offers (
-      id SERIAL PRIMARY KEY,
-      merchant_id INT NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
-      title TEXT NOT NULL,
-      description TEXT,
-      category TEXT,
-      price NUMERIC(12,2) NOT NULL,
-      stock INT NOT NULL DEFAULT 1,
-      image_url TEXT NOT NULL,
-      expires_at TIMESTAMPTZ NOT NULL,
-      status TEXT NOT NULL DEFAULT 'active',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at);
-    CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status);
-    """)
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS merchants (
+          id SERIAL PRIMARY KEY,
+          name TEXT NOT NULL,
+          address TEXT,
+          phone TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS offers (
+          id SERIAL PRIMARY KEY,
+          merchant_id INT NOT NULL REFERENCES merchants(id) ON DELETE CASCADE,
+          title TEXT NOT NULL,
+          description TEXT,
+          category TEXT,
+          price NUMERIC(12,2) NOT NULL,
+          stock INT NOT NULL DEFAULT 1,
+          image_url TEXT NOT NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_offers_expires ON offers(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status);
+        """
+    )
 
 async def _ensure(conn: asyncpg.Connection):
     if RUN_MIGRATIONS:
@@ -79,7 +85,7 @@ async def pool():
 async def health():
     return {"ok": True}
 
-# --- R2 client ---
+# --- R2 client / URL helpers ---
 def _r2_client():
     if not all([R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
         raise RuntimeError("R2 env not configured")
@@ -92,6 +98,17 @@ def _r2_client():
         region_name="auto",
     )
 
+def _public_r2_url(key: str) -> str:
+    """
+    Преобразуем account endpoint вида:
+      https://<account>.r2.cloudflarestorage.com
+    в публичный:
+      https://pub-<account>.r2.dev/<bucket>/<key>
+    """
+    host = R2_ENDPOINT.split("//", 1)[-1]
+    account = host.split(".", 1)[0]
+    return f"https://pub-{account}.r2.dev/{R2_BUCKET}/{key}"
+
 # --- Upload image to R2 ---
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
@@ -100,8 +117,7 @@ async def upload(file: UploadFile = File(...)):
         if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
             raise HTTPException(status_code=400, detail="Unsupported image type")
 
-        # читаем в память (устойчиво к особенностям потоков)
-        content = await file.read()
+        content = await file.read()  # читаем в память (надёжно для WSGI/ASGI)
         key = f"offers/{uuid4().hex}{ext}"
 
         s3 = _r2_client()
@@ -115,8 +131,7 @@ async def upload(file: UploadFile = File(...)):
             ACL="public-read"
         )
 
-        # Для account endpoint вида https://<id>.r2.cloudflarestorage.com
-        public_url = f"{R2_ENDPOINT.rstrip('/')}/{R2_BUCKET}/{key}"
+        public_url = _public_r2_url(key)
         return {"url": public_url, "key": key}
     except HTTPException:
         raise
@@ -135,29 +150,39 @@ async def create_offer(payload: Dict[str, Any] = Body(...)):
     image_url = (payload.get("image_url") or "").strip() or NO_PHOTO_URL
 
     async with _pool.acquire() as conn:
-        row = await conn.fetchrow("""
+        row = await conn.fetchrow(
+            """
             INSERT INTO offers (merchant_id, title, description, price, stock, category, image_url, expires_at, status, created_at)
             VALUES ($1, $2, $3, $4, $5, COALESCE($6,'other'), $7, $8::timestamptz, 'active', NOW())
             RETURNING id
-        """,
-        merchant_id,
-        payload.get("title"),
-        payload.get("description"),
-        payload.get("price"),
-        int(payload.get("stock")),
-        payload.get("category"),
-        image_url,
-        payload.get("expires_at"),
+            """,
+            merchant_id,
+            payload.get("title"),
+            payload.get("description"),
+            payload.get("price"),
+            int(payload.get("stock")),
+            payload.get("category"),
+            image_url,
+            payload.get("expires_at"),
         )
         return {"id": row["id"]}
 
-# --- Public offers list ---
+# --- Public offers list (фикс тройных кавычек) ---
 @app.get("/public/offers")
 async def public_offers():
     async with _pool.acquire() as conn:
-        rows = await conn.fetch("""
+        rows = await conn.fetch(
+            """
             SELECT o.id, o.title, o.description, o.price, o.stock, o.category,
                    o.image_url, o.expires_at, o.status,
                    m.id AS merchant_id, m.name AS merchant_name, m.address
             FROM offers o
-            JOIN merchants m ON m.id
+            JOIN merchants m ON m.id = o.merchant_id
+            WHERE o.status = 'active'
+              AND o.expires_at > NOW()
+              AND o.stock > 0
+            ORDER BY o.expires_at ASC
+            LIMIT 200
+            """
+        )
+        return [dict(r) for r in rows]
