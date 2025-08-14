@@ -1,7 +1,7 @@
 import os
 import mimetypes
 from uuid import uuid4
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 import asyncpg
 from fastapi import FastAPI, UploadFile, File, HTTPException, Body
@@ -19,6 +19,9 @@ R2_BUCKET = os.environ.get("R2_BUCKET")
 R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
 
+# Плейсхолдер, если фото не загрузили
+NO_PHOTO_URL = "https://foodyweb-production.up.railway.app/img/no-photo.png"
+
 app = FastAPI()
 _pool: asyncpg.pool.Pool | None = None
 
@@ -32,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- DB ---
+# --- DB bootstrap ---
 async def _initialize(conn: asyncpg.Connection):
     await conn.execute("""
     CREATE TABLE IF NOT EXISTS merchants (
@@ -96,16 +99,23 @@ async def upload(file: UploadFile = File(...)):
         ext = os.path.splitext(file.filename or "")[1].lower() or ".jpg"
         if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
             raise HTTPException(status_code=400, detail="Unsupported image type")
+
+        # читаем в память (устойчиво к особенностям потоков)
+        content = await file.read()
         key = f"offers/{uuid4().hex}{ext}"
 
         s3 = _r2_client()
         content_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
-        s3.upload_fileobj(
-            Fileobj=file.file,
+
+        s3.put_object(
             Bucket=R2_BUCKET,
             Key=key,
-            ExtraArgs={"ContentType": content_type, "ACL": "public-read"},
+            Body=content,
+            ContentType=content_type,
+            ACL="public-read"
         )
+
+        # Для account endpoint вида https://<id>.r2.cloudflarestorage.com
         public_url = f"{R2_ENDPOINT.rstrip('/')}/{R2_BUCKET}/{key}"
         return {"url": public_url, "key": key}
     except HTTPException:
@@ -113,16 +123,16 @@ async def upload(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
-# --- Create offer ---
+# --- Create offer (image optional) ---
 @app.post("/merchant/offers")
 async def create_offer(payload: Dict[str, Any] = Body(...)):
-    required = ["title", "price", "stock", "image_url", "expires_at"]
+    required = ["title", "price", "stock", "expires_at"]
     for r in required:
         if r not in payload or (str(payload[r]).strip() == ""):
             raise HTTPException(status_code=400, detail=f"Field {r} is required")
 
-    # TODO: взять merchant_id из auth; для пилота ставим 1
     merchant_id = int(payload.get("merchant_id") or 1)
+    image_url = (payload.get("image_url") or "").strip() or NO_PHOTO_URL
 
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("""
@@ -136,12 +146,12 @@ async def create_offer(payload: Dict[str, Any] = Body(...)):
         payload.get("price"),
         int(payload.get("stock")),
         payload.get("category"),
-        payload.get("image_url"),
+        image_url,
         payload.get("expires_at"),
         )
         return {"id": row["id"]}
 
-# --- Public offers list (stable SQL) ---
+# --- Public offers list ---
 @app.get("/public/offers")
 async def public_offers():
     async with _pool.acquire() as conn:
@@ -150,11 +160,4 @@ async def public_offers():
                    o.image_url, o.expires_at, o.status,
                    m.id AS merchant_id, m.name AS merchant_name, m.address
             FROM offers o
-            JOIN merchants m ON m.id = o.merchant_id
-            WHERE o.status = 'active'
-              AND o.expires_at > NOW()
-              AND o.stock > 0
-            ORDER BY o.expires_at ASC
-            LIMIT 200
-        """)
-        return [dict(r) for r in rows]
+            JOIN merchants m ON m.id
