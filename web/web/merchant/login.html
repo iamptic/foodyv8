@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Foody — Вход</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto; padding: 24px; max-width: 520px; margin: 0 auto; }
+    .card { border: 1px solid #eee; border-radius: 16px; padding: 20px; box-shadow: 0 4px 14px rgba(0,0,0,.05); }
+    label { font-weight: 600; display:block; margin: 12px 0 6px; }
+    input { width:100%; padding: 10px 12px; border:1px solid #ddd; border-radius: 12px; font-size:14px; }
+    button { margin-top:16px; padding:12px 16px; border-radius:12px; border:0; background:#111; color:#fff; font-weight:600; cursor:pointer;}
+  </style>
+</head>
+<body>
+  <h1>Вход</h1>
+  <div class="card">
+    <form id="form">
+      <label>Телефон</label>
+      <input name="phone" placeholder="+9715..." required />
+      <label>Пароль</label>
+      <input type="password" name="password" required />
+      <button type="submit">Войти</button>
+    </form>
+  </div>
+
+  <script src="/config.js"></script>
+  <script>
+    if (!window.foodyApi) window.foodyApi = 'https://foodyback-production.up.railway.app';
+
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const payload = Object.fromEntries(new FormData(e.target).entries());
+      try {
+        const r = await fetch((window.foodyApi||'') + '/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include', // важно
+          body: JSON.stringify(payload)
+        });
+        if (!r.ok) throw new Error(await r.text());
+        location.href = '/web/merchant/';
+      } catch (err) {
+        alert('Ошибка входа: ' + err.message);
+      }
+    });
+  </script>
+</body>
+</html>
